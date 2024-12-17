@@ -122,6 +122,11 @@ class DetectionRobot:
         self.centers_old = {}
         self.movement_dict = {}
  
+        # Set device
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        # Load YOLO model
+        self.model = YOLO('yolo11x.pt').to(self.device)
+
         # Publishers
         self.publishers = [PedestrianLeftPublisher(), PedestrianRightPublisher(), VehicleLeftPublisher(), VehicleRightPublisher()]
 
@@ -194,19 +199,11 @@ class DetectionRobot:
         thr_centers = 30
         frame_max = 10
         
-        # Set device
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        
         # Get video properties
         height = 480 #int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
         width = 640 #int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
         # fps = video.get(cv2.CAP_PROP_FPS)
         fps = 30
-        print(f'[INFO] Video dimensions: {width}x{height} @ {fps}fps')
-        print(f'[INFO] Using device: {device}')
-
-        # Load YOLO model
-        model = YOLO('yolo11x.pt').to(device)
         
         # Initialize tracking variables
         centers_old = {}
@@ -214,7 +211,7 @@ class DetectionRobot:
         lastKey = ''
 
         frame = [cv2.cvtColor(f, cv2.COLOR_RGB2BGR) for f in [self.front_img, self.back_img]]
-        results = model.predict(frame, conf=conf_level, classes=[0] if mode == "ped" else [2,3,4,6,8], device=device, verbose=False)
+        results = self.model.predict(frame, conf=conf_level, classes=[0] if mode == "ped" else [2,3,4,6,8], device=self.device, verbose=False)
         
         for i, result in enumerate(results):
             boxes = result.boxes.xyxy.cpu().numpy()
