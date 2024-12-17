@@ -99,6 +99,7 @@ def is_stationary(positions: dict, movement: list, mode: str = 'ped', min_displa
     # Object is stationary if both:
     # 1. Relative displacement is insignificant
     # 2. Size hasn't changed significantly
+    print(mode, relative_displacement)
     if mode == 'ped':
         return relative_displacement < 0.1, relative_displacement # and area_change == 0
     elif mode == 'veh':
@@ -123,6 +124,7 @@ class DetectionRobot:
         self.current_vel = None
         self.centers_old = {}
         self.movement_dict = {}
+        self.frame = 0
  
         # Set device
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -190,8 +192,6 @@ class DetectionRobot:
         fps = 30
         
         # Initialize tracking variables
-        centers_old = {}
-        movement_dict = {}
         lastKey = ''
 
         frame = [cv2.cvtColor(f, cv2.COLOR_RGB2BGR) for f in [self.front_img, self.back_img]]
@@ -238,21 +238,22 @@ class DetectionRobot:
                 center_y = int((ymax + ymin) / 2)
                 
                 # Update tracking with both position and size
-                centers_old, id_obj, is_new, lastKey = update_tracking(
-                    centers_old, 
+                # print(self.centers_old[id_obj].keys()[-1])
+                self.centers_old, id_obj, is_new, lastKey = update_tracking(
+                    self.centers_old, 
                     (center_x, center_y),  # position
                     (width, height),       # size
                     thr_centers, 
                     lastKey, 
-                    i, 
+                    self.frame, 
                     frame_max
                 )
 
-                if id_obj not in movement_dict:
-                    movement_dict[id_obj] = []
+                if id_obj not in self.movement_dict:
+                    self.movement_dict[id_obj] = []
 
-                stationary, displacement = is_stationary(centers_old[id_obj], movement_dict[id_obj][MIN_NUM_FRAMES:], mode=mode)
-                movement_dict[id_obj].append(stationary)
+                stationary, displacement = is_stationary(self.centers_old[id_obj], self.movement_dict[id_obj][MIN_NUM_FRAMES:], mode=mode)
+                self.movement_dict[id_obj].append(stationary)
 
 
                 if mode == 'ped':
@@ -266,6 +267,7 @@ class DetectionRobot:
                         frame_movement[id_obj] = False
                     
             print(f'[INFO] Frame movement: {frame_movement}')
+            self.frame += 1
             if mode == "ped":
                 if any(frame_movement.values()):
                     self.publishers[i].publish(True)
