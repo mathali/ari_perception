@@ -23,7 +23,7 @@ class PedestrianPublisher():
 
 class FrontImagePublisher:
     def __init__(self):
-        self.publisher = rospy.Publisher('front_camera_image', Image, queue_size=20)
+        self.publisher = rospy.Publisher('front_camera_image_detections', Image, queue_size=20)
         self.br = CvBridge()
         self.rate = rospy.Rate(20)
 
@@ -42,7 +42,7 @@ class FrontImagePublisher:
 
 class BackImagePublisher:
     def __init__(self):
-        self.publisher = rospy.Publisher('back_camera_image', Image, queue_size=20)
+        self.publisher = rospy.Publisher('back_camera_image_detections', Image, queue_size=20)
         self.br = CvBridge()
         self.rate = rospy.Rate(20)
 

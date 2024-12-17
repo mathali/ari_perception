@@ -7,7 +7,7 @@ import rospy
 from PIL import Image as PILImage
 from sensor_msgs.msg import CompressedImage, JointState
 from std_msgs.msg import Int8
-from publisher import  PedestrianLeftPublisher, PedestrianRightPublisher, VehicleLeftPublisher, VehicleRightPublisher
+from publisher import  PedestrianLeftPublisher, PedestrianRightPublisher, VehicleLeftPublisher, VehicleRightPublisher, FrontImagePublisher, BackImagePublisher
 
 MIN_NUM_FRAMES = 10
 
@@ -124,6 +124,10 @@ class DetectionRobot:
  
         # Publishers
         self.publishers = [PedestrianLeftPublisher(), PedestrianRightPublisher(), VehicleLeftPublisher(), VehicleRightPublisher()]
+
+        # Initialize image publishers
+        self.front_pub = FrontImagePublisher()
+        self.back_pub = BackImagePublisher()
  
         #External topics subscription
         rospy.Subscriber('/head_front_camera/color/image_raw/compressed', CompressedImage, self.front_cam_callback)
@@ -216,6 +220,18 @@ class DetectionRobot:
             boxes = result.boxes.xyxy.cpu().numpy()
             boxes = boxes[boxes[:,0].argsort()]  # Sort boxes by x1 (leftmost) coordinate
             conf = result.boxes.conf.cpu().numpy()
+            
+            # Draw detections on frame
+            frame_with_boxes = frame[i].copy()
+            for box in boxes:
+                xmin, ymin, xmax, ymax = map(int, box)
+                cv2.rectangle(frame_with_boxes, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
+            
+            # Publish annotated frames
+            if i == 0:
+                self.front_pub.publish(frame_with_boxes)
+            else:
+                self.back_pub.publish(frame_with_boxes)
             
             frame_movement = {}
             is_first = True
