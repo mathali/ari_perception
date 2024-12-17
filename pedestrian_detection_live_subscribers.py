@@ -5,7 +5,8 @@ import numpy as np
 import torch
 import rospy
 from PIL import Image as PILImage
-from sensor_msgs.msg import Int32, CompressedImage, JointState
+from sensor_msgs.msg import CompressedImage, JointState
+from std_msgs.msg import Int8
 from publisher import  PedestrianLeftPublisher, PedestrianRightPublisher, VehicleLeftPublisher, VehicleRightPublisher
 
 MIN_NUM_FRAMES = 10
@@ -127,7 +128,7 @@ class DetectionRobot:
         #External topics subscription
         rospy.Subscriber('/head_front_camera/color/image_raw/compressed', CompressedImage, self.front_cam_callback)
         rospy.Subscriber('/cam_new_back/color/image_raw/compressed', CompressedImage, self.back_cam_callback)
-        rospy.Subscriber('/position', Int32, self.position_callback)
+        rospy.Subscriber('/position', Int8, self.position_callback)
         rospy.Subscriber('/head_controller/state', JointState, self.rotation_callback)
 
     def front_cam_callback(self, msg):
