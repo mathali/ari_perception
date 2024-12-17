@@ -210,8 +210,20 @@ class DetectionRobot:
             
             # Publish annotated frames
             if i == 0:
+                try:
+                    cv2.namedWindow('Front Camera Detections', cv2.WINDOW_NORMAL)
+                    cv2.imshow('Front Camera Detections', frame_with_boxes)
+                    cv2.waitKey(1)  # Update frame without blocking
+                except Exception as e:
+                    rospy.logwarn(f"Could not display front camera image: {e}")
                 self.front_pub.publish(frame_with_boxes)
             else:
+                try:
+                    cv2.namedWindow('Back Camera Detections', cv2.WINDOW_NORMAL)
+                    cv2.imshow('Back Camera Detections', frame_with_boxes)
+                    cv2.waitKey(1)  # Update frame without blocking
+                except Exception as e:
+                    rospy.logwarn(f"Could not display back camera image: {e}")
                 self.back_pub.publish(frame_with_boxes)
             
             frame_movement = {}
