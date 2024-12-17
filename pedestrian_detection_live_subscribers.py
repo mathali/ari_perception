@@ -5,7 +5,8 @@ import numpy as np
 import torch
 import rospy
 from PIL import Image as PILImage
-from sensor_msgs.msg import CompressedImage, JointState
+from sensor_msgs.msg import CompressedImage
+from control_msgs.msg import JointTrajectoryControllerState
 from std_msgs.msg import Int8
 from publisher import  PedestrianLeftPublisher, PedestrianRightPublisher, VehicleLeftPublisher, VehicleRightPublisher, FrontImagePublisher, BackImagePublisher
 
@@ -65,6 +66,7 @@ def is_stationary(positions: dict, movement: list, mode: str = 'ped', min_displa
         Boolean indicating if object is stationary
     """
     # Need minimum number of positions to determine if stationary
+    # print(f'[INFO] Mode: {mode}')
     if len(positions) < min_positions:
         return False if mode == 'ped' else 'ignore', 0.0   # Not enough data to determine if stationary
         
@@ -111,7 +113,7 @@ def is_stationary(positions: dict, movement: list, mode: str = 'ped', min_displa
 
 class DetectionRobot:
     def __init__(self):
-        rospy.init_node('detect_universal', anonymous=True)
+        rospy.init_node('detect_universal')
 
         self.front_img = None
         self.back_img = None
@@ -137,8 +139,8 @@ class DetectionRobot:
         #External topics subscription
         rospy.Subscriber('/head_front_camera/color/image_raw/compressed', CompressedImage, self.front_cam_callback)
         rospy.Subscriber('/cam_new_back/color/image_raw/compressed', CompressedImage, self.back_cam_callback)
-        rospy.Subscriber('/position', Int8, self.position_callback)
-        rospy.Subscriber('/head_controller/state', JointState, self.rotation_callback)
+        rospy.Subscriber('/current_state', Int8, self.position_callback)
+        rospy.Subscriber('/head_controller/state', JointTrajectoryControllerState, self.rotation_callback)
 
     def front_cam_callback(self, msg):
         try:
@@ -165,25 +167,6 @@ class DetectionRobot:
     def rotation_callback(self, msg):
         self.current_pos = msg.actual.positions[0]
         self.current_vel = msg.actual.velocities[0]
-
-    def front_cam_callback(self, msg):
-        try:
-            image = PILImage.open(io.BytesIO(msg.data))
-            self.front_img = np.array(image)
-        except ValueError:
-            print(f"Error processing message from front cam")
-
-    def back_cam_callback(self, msg):
-        try:
-            image = PILImage.open(io.BytesIO(msg.data))
-            back_img = np.array(image)
-            
-            h, w = back_img.shape[:2]
-            back_img = cv2.resize(back_img, (w//2, h//2))
-            back_img = np.pad(back_img, ((60,60), (0,0), (0,0)), mode='constant')
-            self.back_img = back_img
-        except ValueError:
-            print(f"Error processing message from back cam")
 
     def position_callback(self, msg):
         self.position_data = msg.data
@@ -194,6 +177,7 @@ class DetectionRobot:
 
 
     def detect_universal_fb(self, mode: str) -> int:
+        # print(f'[INFO] Detecting universal FB')
         # Configurations
         conf_level = 0.25
         thr_centers = 30
@@ -255,7 +239,7 @@ class DetectionRobot:
                 if id_obj not in movement_dict:
                     movement_dict[id_obj] = []
 
-                stationary, displacement = is_stationary(centers_old[id_obj], movement_dict[id_obj][MIN_NUM_FRAMES:], mode='veh')
+                stationary, displacement = is_stationary(centers_old[id_obj], movement_dict[id_obj][MIN_NUM_FRAMES:], mode=mode)
                 movement_dict[id_obj].append(stationary)
 
 
@@ -269,7 +253,7 @@ class DetectionRobot:
                         is_true = False if stationary != 'ignore' else is_true
                         frame_movement[id_obj] = False
                     
-                    
+            print(f'[INFO] Frame movement: {frame_movement}')
             if mode == "ped":
                 if any(frame_movement.values()):
                     self.publishers[i].publish(True)
@@ -287,6 +271,8 @@ class DetectionRobot:
         rate = rospy.Rate(20)
  
         while not rospy.is_shutdown():
+            # print(f'[INFO] Position data: {self.position_data}')
+            # print(f'[INFO] Current data: {self.position_data}\n{self.current_vel}\n{type(self.front_img)}\n{type(self.back_img)}')
             if self.position_data == 0:
                 mode = 'ped'
             elif self.position_data == 1:
@@ -302,7 +288,9 @@ class DetectionRobot:
 
 if __name__ == '__main__':
     try:
+        print(f'[INFO] Starting Detection Robot')
         robot = DetectionRobot()
+        print(f'[INFO] Detection Robot initialized')
         rospy.loginfo("Init Robot Stat")
         robot.run_detection()
  
