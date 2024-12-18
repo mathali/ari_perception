@@ -1,9 +1,12 @@
 import io
 import cv2
+import time
 from ultralytics import YOLO
 import numpy as np
 import torch
 import rospy
+import openvino as ov
+from pathlib import Path
 from PIL import Image as PILImage
 from sensor_msgs.msg import CompressedImage
 from control_msgs.msg import JointTrajectoryControllerState
@@ -127,9 +130,28 @@ class DetectionRobot:
         self.frame = 0
  
         # Set device
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = 'CPU' #'cuda' if torch.cuda.is_available() else 'cpu'
         # Load YOLO model
-        self.model = YOLO('yolo11x.pt').to(self.device)
+        core = ov.Core()
+        # self.model = YOLO('yolo11m.pt').to(self.device)
+        DET_MODEL_NAME = 'yolo11m'
+        det_model_path = Path(f"{DET_MODEL_NAME}_openvino_model/{DET_MODEL_NAME}.xml")
+        det_ov_model = core.read_model(det_model_path)
+
+        # Compile the model
+        det_compiled_model = core.compile_model(det_ov_model, self.device, {})
+        
+        # Initialize YOLO model
+        self.model = YOLO(det_model_path.parent, task="detect")
+
+        if self.model.predictor is None:
+            custom = {"conf": 0.25, "batch": 2, "save": False, "mode": "predict"}  # method defaults
+            args = {**self.model.overrides, **custom}
+            self.model.predictor = self.model._smart_load("predictor")(overrides=args, _callbacks=self.model.callbacks)
+            self.model.predictor.setup_model(model=self.model.model)
+        
+        # Assign the compiled OpenVINO model to the predictor
+        self.model.predictor.model.ov_compiled_model = det_compiled_model
 
         # Publishers
         self.publishers = [PedestrianLeftPublisher(), PedestrianRightPublisher(), VehicleLeftPublisher(), VehicleRightPublisher()]
@@ -210,20 +232,20 @@ class DetectionRobot:
             
             # Publish annotated frames
             if i == 0:
-                try:
-                    cv2.namedWindow('Front Camera Detections', cv2.WINDOW_NORMAL)
-                    cv2.imshow('Front Camera Detections', frame_with_boxes)
-                    cv2.waitKey(1)  # Update frame without blocking
-                except Exception as e:
-                    rospy.logwarn(f"Could not display front camera image: {e}")
+                # try:
+                #     cv2.namedWindow('Front Camera Detections', cv2.WINDOW_NORMAL)
+                #     cv2.imshow('Front Camera Detections', frame_with_boxes)
+                #     cv2.waitKey(1)  # Update frame without blocking
+                # except Exception as e:
+                #     rospy.logwarn(f"Could not display front camera image: {e}")
                 self.front_pub.publish(frame_with_boxes)
             else:
-                try:
-                    cv2.namedWindow('Back Camera Detections', cv2.WINDOW_NORMAL)
-                    cv2.imshow('Back Camera Detections', frame_with_boxes)
-                    cv2.waitKey(1)  # Update frame without blocking
-                except Exception as e:
-                    rospy.logwarn(f"Could not display back camera image: {e}")
+                # try:
+                #     cv2.namedWindow('Back Camera Detections', cv2.WINDOW_NORMAL)
+                #     cv2.imshow('Back Camera Detections', frame_with_boxes)
+                #     cv2.waitKey(1)  # Update frame without blocking
+                # except Exception as e:
+                #     rospy.logwarn(f"Could not display back camera image: {e}")
                 self.back_pub.publish(frame_with_boxes)
             
             frame_movement = {}
@@ -259,12 +281,16 @@ class DetectionRobot:
                 if mode == 'ped':
                     frame_movement[id_obj] = stationary
                 else:
-                    if is_first and stationary == True:
-                        frame_movement[id_obj] = True
-                        is_first = False
-                    else:
-                        is_true = False if stationary != 'ignore' else is_true
+                    if stationary == 'ignore' or stationary == True:
                         frame_movement[id_obj] = False
+                    else:
+                        frame_movement[id_obj] = True
+                    # if is_first and stationary == True:
+                    #     frame_movement[id_obj] = True
+                    #     is_first = False
+                    # else:
+                    #     is_true = False if stationary != 'ignore' else is_true
+                    #     frame_movement[id_obj] = False
                     
             print(f'[INFO] Frame movement: {frame_movement}')
             self.frame += 1
