@@ -12,8 +12,10 @@ from sensor_msgs.msg import CompressedImage
 from control_msgs.msg import JointTrajectoryControllerState
 from std_msgs.msg import Int8
 from publisher import  PedestrianLeftPublisher, PedestrianRightPublisher, VehicleLeftPublisher, VehicleRightPublisher, FrontImagePublisher, BackImagePublisher
+from PIL import Image
 
 MIN_NUM_FRAMES = 10
+MIN_NUM_FRAMES_VEH = 3
 
 
 def filter_tracks(centers: dict, patience: int) -> dict:
@@ -52,7 +54,6 @@ def update_tracking(centers_old: dict, obj_center: tuple, obj_size: tuple,
         centers_old[id_obj] = {frame: (obj_center, obj_size)}
         lastKey = list(centers_old.keys())[-1]
     return centers_old, id_obj, is_new, lastKey
-
 
 def is_stationary(positions: dict, movement: list, mode: str = 'ped', min_displacement: float = 0.4, min_positions: int = MIN_NUM_FRAMES) -> bool:
     """
@@ -107,10 +108,7 @@ def is_stationary(positions: dict, movement: list, mode: str = 'ped', min_displa
         return relative_displacement < 0.1, relative_displacement # and area_change == 0
     elif mode == 'veh':
         if relative_displacement < 0.2:
-            if False not in movement:
-                return 'ignore', relative_displacement
-            else:
-                return True, relative_displacement
+            return True, relative_displacement
         else:
             return False, relative_displacement
 
@@ -128,9 +126,15 @@ class DetectionRobot:
         self.centers_old = {}
         self.movement_dict = {}
         self.frame = 0
+
+        self.previous_state = None
+        self.ref_frame_front = None
+        self.ref_frame_back = None
  
         # Set device
         self.device = 'CPU' #'cuda' if torch.cuda.is_available() else 'cpu'
+        # self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
         # Load YOLO model
         core = ov.Core()
         # self.model = YOLO('yolo11m.pt').to(self.device)
@@ -143,6 +147,7 @@ class DetectionRobot:
         
         # Initialize YOLO model
         self.model = YOLO(det_model_path.parent, task="detect")
+        # self.model = YOLO('yolo11x.pt')
 
         if self.model.predictor is None:
             custom = {"conf": 0.25, "batch": 2, "save": False, "mode": "predict"}  # method defaults
@@ -164,7 +169,6 @@ class DetectionRobot:
         rospy.Subscriber('/head_front_camera/color/image_raw/compressed', CompressedImage, self.front_cam_callback)
         rospy.Subscriber('/cam_new_back/color/image_raw/compressed', CompressedImage, self.back_cam_callback)
         rospy.Subscriber('/current_state', Int8, self.position_callback)
-        rospy.Subscriber('/head_controller/state', JointTrajectoryControllerState, self.rotation_callback)
 
     def front_cam_callback(self, msg):
         try:
@@ -188,17 +192,52 @@ class DetectionRobot:
     def position_callback(self, msg):
         self.position_data = msg.data
 
-    def rotation_callback(self, msg):
-        self.current_pos = msg.actual.positions[0]
-        self.current_vel = msg.actual.velocities[0]
 
-    def position_callback(self, msg):
-        self.position_data = msg.data
+    def compute_diff_mask(self, frame: np.ndarray, direction: int) -> np.ndarray:
+        # Convert to float32 for calculations
+        img1 = frame.astype(np.float32)
+        if direction == 0:
+            img2 = self.ref_frame_front.astype(np.float32)
+        else:
+            img2 = self.ref_frame_back.astype(np.float32)
+        
+        # Calculate absolute difference for each channel
+        diff = np.abs(img1 - img2)
+        
+        # Method 1: Sum differences across channels
+        sum_diff = np.sum(diff, axis=2)
+        # Normalize to 0-255 range
+        sum_diff = (sum_diff * 255.0 / sum_diff.max()).astype(np.uint8)
 
-    def rotation_callback(self, msg):
-        self.current_pos = msg.actual.positions[0]
-        self.current_vel = msg.actual.velocities[0]
+         
+        kernel = np.ones((5,5), np.uint8)
+        sum_mask = cv2.morphologyEx(sum_diff, cv2.MORPH_OPEN, kernel)
+        sum_mask = cv2.morphologyEx(sum_mask, cv2.MORPH_CLOSE, kernel)
+    
+        return sum_mask
+    
+    def filter_detections(self, frame: np.ndarray, boxes: np.ndarray, conf: np.ndarray, direction: int) -> tuple[np.ndarray, np.ndarray]:
+        diff_mask = self.compute_diff_mask(frame, direction)
+        diff_mask = np.where(diff_mask > 20, 255, 0)
+        # Calculate percentage of changed pixels in each box
+        filtered_boxes = []
+        filtered_conf = []
+        for box, confidence in zip(boxes, conf):
+            xmin, ymin, xmax, ymax = map(int, box)
+            # Get the region of the diff mask corresponding to the box
+            box_mask = diff_mask[ymin:ymax, xmin:xmax]
+            # Calculate percentage of changed pixels (non-zero values)
+            changed_pixels = np.count_nonzero(box_mask)
+            total_pixels = box_mask.size
+            change_percentage = changed_pixels / total_pixels * 100
+            
+            # Keep box if more than 50% pixels changed
+            if change_percentage >= 40:
+                filtered_boxes.append(box)
+                filtered_conf.append(confidence)
 
+        return np.array(filtered_boxes), np.array(filtered_conf)
+    
 
     def detect_universal_fb(self, mode: str) -> int:
         # print(f'[INFO] Detecting universal FB')
@@ -217,39 +256,24 @@ class DetectionRobot:
         lastKey = ''
 
         frame = [cv2.cvtColor(f, cv2.COLOR_RGB2BGR) for f in [self.front_img, self.back_img]]
-        results = self.model.predict(frame, conf=conf_level, classes=[0] if mode == "ped" else [2,3,4,6,8], device=self.device, verbose=False)
+        results = self.model.predict(frame, conf=conf_level, classes=[0] if mode == "ped" else [1,2,3,5,7], device=self.device, verbose=False)
         
-        for i, result in enumerate(results):
+
+        front = None
+        back = None
+
+        for direction, result in enumerate(results):
             boxes = result.boxes.xyxy.cpu().numpy()
             boxes = boxes[boxes[:,0].argsort()]  # Sort boxes by x1 (leftmost) coordinate
             conf = result.boxes.conf.cpu().numpy()
             
-            # Draw detections on frame
-            frame_with_boxes = frame[i].copy()
-            for box in boxes:
-                xmin, ymin, xmax, ymax = map(int, box)
-                cv2.rectangle(frame_with_boxes, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
-            
-            # Publish annotated frames
-            if i == 0:
-                # try:
-                #     cv2.namedWindow('Front Camera Detections', cv2.WINDOW_NORMAL)
-                #     cv2.imshow('Front Camera Detections', frame_with_boxes)
-                #     cv2.waitKey(1)  # Update frame without blocking
-                # except Exception as e:
-                #     rospy.logwarn(f"Could not display front camera image: {e}")
-                self.front_pub.publish(frame_with_boxes)
-            else:
-                # try:
-                #     cv2.namedWindow('Back Camera Detections', cv2.WINDOW_NORMAL)
-                #     cv2.imshow('Back Camera Detections', frame_with_boxes)
-                #     cv2.waitKey(1)  # Update frame without blocking
-                # except Exception as e:
-                #     rospy.logwarn(f"Could not display back camera image: {e}")
-                self.back_pub.publish(frame_with_boxes)
-            
             frame_movement = {}
             is_first = True
+            frame_with_boxes = frame[direction].copy()
+
+            if mode == 'veh':
+                boxes, conf = self.filter_detections(frame[direction], boxes, conf, direction)
+
             # Process detections
             for ix, (box, confidence) in enumerate(zip(boxes, conf)):
                 xmin, ymin, xmax, ymax = map(int, box)
@@ -274,55 +298,122 @@ class DetectionRobot:
                 if id_obj not in self.movement_dict:
                     self.movement_dict[id_obj] = []
 
-                stationary, displacement = is_stationary(self.centers_old[id_obj], self.movement_dict[id_obj][MIN_NUM_FRAMES:], mode=mode)
-                self.movement_dict[id_obj].append(stationary)
-
-
                 if mode == 'ped':
+                    stationary, displacement = is_stationary(self.centers_old[id_obj], self.movement_dict[id_obj], mode=mode)
+                    self.movement_dict[id_obj].append(stationary)
                     frame_movement[id_obj] = stationary
                 else:
-                    if stationary == 'ignore' or stationary == True:
-                        frame_movement[id_obj] = False
-                    else:
+                    stationary, velocity = is_stationary(self.centers_old[id_obj], self.movement_dict[id_obj])
+                    frame_movement[id_obj] = stationary
+                    self.movement_dict[id_obj].append(stationary)
+
+                    if is_first and stationary == True:
                         frame_movement[id_obj] = True
-                    # if is_first and stationary == True:
-                    #     frame_movement[id_obj] = True
-                    #     is_first = False
-                    # else:
-                    #     is_true = False if stationary != 'ignore' else is_true
-                    #     frame_movement[id_obj] = False
+                        is_first = False
+                    else:
+                        is_first = False
+                        frame_movement[id_obj] = False
+                # Add velocity text to image
+                if mode != 'ped':
+                    velocity_text = f"ID: {id_obj}"
+                    cv2.putText(frame_with_boxes, velocity_text, (xmin, ymin-10), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0))
+                cv2.rectangle(frame_with_boxes, (xmin, ymin), (xmax, ymax), (0, 255, 0) if frame_movement[id_obj] else (0, 0, 255))
+
+                # Publish annotated frames
+            print(f'[INFO] Direction value: {direction}')
+            if direction == 0:
+                self.front_pub.publish(frame_with_boxes)
+                front = frame_with_boxes
+                
+            else:
+                self.back_pub.publish(frame_with_boxes)
+                back = frame_with_boxes
+
                     
             print(f'[INFO] Frame movement: {frame_movement}')
             self.frame += 1
             if mode == "ped":
                 if any(frame_movement.values()):
-                    self.publishers[i].publish(True)
+                    self.publishers[direction].publish(True)
                 else:
-                    self.publishers[i].publish(False)
+                    self.publishers[direction].publish(False)
             else:
-                if any(frame_movement.values()):
-                    self.publishers[i+2].publish(True)
+                if any(frame_movement.values()) or len(boxes) == 0:
+                    self.publishers[direction+2].publish(True)
                 else:
-                    self.publishers[i+2].publish(False)
+                    self.publishers[direction+2].publish(False)
         
+        return front, back
     
     def run_detection(self):
- 
-        rate = rospy.Rate(20)
- 
+        rate = rospy.Rate(10)
+        front_vid = []
+        back_vid = []
+
         while not rospy.is_shutdown():
-            # print(f'[INFO] Position data: {self.position_data}')
             # print(f'[INFO] Current data: {self.position_data}\n{self.current_vel}\n{type(self.front_img)}\n{type(self.back_img)}')
+            if self.previous_state is None or self.previous_state != self.position_data:
+                self.previous_state = self.position_data
+                self.frame = 0
+
             if self.position_data == 0:
-                mode = 'ped'
+                    mode = 'ped'
             elif self.position_data == 1:
                 mode = 'veh'
+            elif self.position_data == 2:
+                print(f'[INFO] Saving videos')
+                print(f'[INFO] Front vid: {len(front_vid)}')
+                print(f'[INFO] Back vid: {len(back_vid)}')
+
+                
+                # Save accumulated frames as videos
+                if len(front_vid) > 0:
+                    front_vid = [cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) if len(frame.shape) == 3 else frame 
+                               for frame in front_vid]
+                    front_vid = np.array(front_vid)
+                    print(f'[INFO] Front vid: {front_vid.shape}')
+                    h, w = front_vid[0].shape[:2]
+                    front_writer = cv2.VideoWriter('tmp/front_video.mp4', 
+                                                 cv2.VideoWriter_fourcc(*'mp4v'), 
+                                                 7, (w,h))
+                    for num, frame in enumerate(front_vid):
+                        # cv2.imwrite(f'tmp/frames/front_frame_{num:04d}.jpg', frame)
+                        front_writer.write(frame)
+                    front_writer.release()
+                    front_vid = []
+                
+                if len(back_vid) > 0:
+                    back_vid = [cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) if len(frame.shape) == 3 else frame 
+                               for frame in back_vid]
+                    back_vid = np.array(back_vid)
+                    print(f'[INFO] Back vid: {back_vid.shape}')
+                    h, w = back_vid[0].shape[:2]
+                    back_writer = cv2.VideoWriter('tmp/back_video.mp4',
+                                                cv2.VideoWriter_fourcc(*'mp4v'),
+                                                7, (w,h))
+                    for frame in back_vid:
+                        back_writer.write(frame)
+                    back_writer.release()
+                    back_vid = []
+                
+                mode = 'save'
             else:
                 mode = 'sleep'
 
+            if self.frame == 0:
+                if self.front_img is not None:
+                    self.ref_frame_front = cv2.cvtColor(self.front_img, cv2.COLOR_RGB2BGR)
+                if self.back_img is not None:
+                    self.ref_frame_back = cv2.cvtColor(self.back_img, cv2.COLOR_RGB2BGR)
 
-            if mode in ['ped', 'veh'] and self.front_img is not None and self.back_img is not None and self.current_vel is not None and abs(self.current_vel) < 1e-2:
-                self.detect_universal_fb(mode=mode)
+            if mode in ['ped', 'veh'] and self.front_img is not None and self.back_img is not None: # and self.current_vel is not None and abs(self.current_vel) < 1e-2:
+                front, back = self.detect_universal_fb(mode=mode)
+                if front is not None and isinstance(front, np.ndarray):
+                    front_vid.append(front)
+
+                if back is not None and isinstance(back, np.ndarray):
+                    back_vid.append(back)
 
             rate.sleep()
 

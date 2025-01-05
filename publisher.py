@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-
 import rospy
 from std_msgs.msg import String, Bool
 from sensor_msgs.msg import Image
@@ -10,7 +9,7 @@ import numpy as np
 class PedestrianPublisher():
 
     def __init__(self):
-        self.publisher = rospy.Publisher('pedestrian_publisher', String, queue_size=20)
+        self.publisher = rospy.Publisher('pedestrian_publisher', String, queue_size=5)
         rospy.init_node('pedestrian_publisher', anonymous=True)
         self.rate = rospy.Rate(20)
 
@@ -23,7 +22,7 @@ class PedestrianPublisher():
 
 class FrontImagePublisher:
     def __init__(self):
-        self.publisher = rospy.Publisher('front_camera_image_detections', Image, queue_size=20)
+        self.publisher = rospy.Publisher('front_camera_image_detections', Image, queue_size=5)
         self.br = CvBridge()
         self.rate = rospy.Rate(20)
 
@@ -42,7 +41,7 @@ class FrontImagePublisher:
 
 class BackImagePublisher:
     def __init__(self):
-        self.publisher = rospy.Publisher('back_camera_image_detections', Image, queue_size=20)
+        self.publisher = rospy.Publisher('back_camera_image_detections', Image, queue_size=5)
         self.br = CvBridge()
         self.rate = rospy.Rate(20)
 
@@ -64,7 +63,7 @@ class BackImagePublisher:
 class PedestrianLeftPublisher():
 
     def __init__(self):
-        self.publisher = rospy.Publisher('topic_p_left', Bool, queue_size=20)
+        self.publisher = rospy.Publisher('topic_p_left', Bool, queue_size=5)
         # rospy.init_node('topic_p_left', anonymous=True)
         self.rate = rospy.Rate(20)
 
@@ -76,7 +75,7 @@ class PedestrianLeftPublisher():
 class PedestrianRightPublisher():
 
     def __init__(self):
-        self.publisher = rospy.Publisher('topic_p_right', Bool, queue_size=20)
+        self.publisher = rospy.Publisher('topic_p_right', Bool, queue_size=5)
         # rospy.init_node('topic_p_right', anonymous=True)
         self.rate = rospy.Rate(20)
 
@@ -88,7 +87,7 @@ class PedestrianRightPublisher():
 class VehicleLeftPublisher():
 
     def __init__(self):
-        self.publisher = rospy.Publisher('topic_t_left', Bool, queue_size=20)
+        self.publisher = rospy.Publisher('topic_t_left', Bool, queue_size=5)
         # rospy.init_node('topic_t_left', anonymous=True)
         self.rate = rospy.Rate(20)
 
@@ -100,7 +99,7 @@ class VehicleLeftPublisher():
 class VehicleRightPublisher():
 
     def __init__(self):
-        self.publisher = rospy.Publisher('topic_t_right', Bool, queue_size=20)
+        self.publisher = rospy.Publisher('topic_t_right', Bool, queue_size=5)
         # rospy.init_node('topic_t_right', anonymous=True)
         self.rate = rospy.Rate(20)
 
